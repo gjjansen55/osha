@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 """
-Given the inspections that we already have in our database, locate those in the
+Given the violations that we already have in our database, locate those in the
 csvs provided that are not present in the database, or which were loaded more
 recently.
 """
@@ -19,36 +19,34 @@ DEBUGGING = False
 OSHA_DATE_FORMAT = '%Y-%m-%d %H:%M:%S %Z'
 
 
-def extract_new_inspections(csv_directory, pathname_new, pathname_updated):
-    """ First, build a dictionary of the inspections that we have. The
-    key is activity_number  the value is LOADED_DATE.
+def collate_violations(csv_directory, pathname_new, pathname_updated):
+    """ First, build a dictionary of the violations that we have. The
+    key will be activity_number:citation_id, the value is LOAD_DATE.
 
     That done, we will read through the CSVs, inspecting activity_nr,
-    citation_id, and ld_dt. We will use the first as a key for the lookup
-    into our dictionary of known violations. If there is no entry, we will
-    write the record out to pathname_new. If there is, we will convert the
-    load_date string into a datetime, and compare it to what we have in the
-    existing record. If it is newer, we will write the row out to
-    pathname_updated. """
+    citation_id, and load_dt. We will concatenate the first two to create
+    a key for the lookup into our dictionary of known violations. If
+    there is no entry, we write the record out to pathname_new. If there is,
+    we convert the load_date string into a datetime, and compare it to what we
+    have in the existing record. If it is newer, we write the value out.  """
 
-    def build_inspection_dictionary():
-        """ Open a cursor on OSHA_INSPECTIONS_NEW, build and return the
-        dictionary mentioned above.
-
-        The ORDER BY clause in the query was there for debugging purposes,
-        but does no particular harm.
-        """
+    def build_violation_dictionary():
+        """ open a cursor on OSHA_VIOLATIONS_NEW, build the dictionary
+        as mentioned above. """
 
         retval = {}
         retrieved = 0
         conn = afl.dbconnections.connect('unicore_helper')
         cur = conn.cursor()
-        cur.execute("""SELECT activity_nbr, loaded_date
-        FROM unicore.osha_inspections_new
-        ORDER BY activity_nbr""")
-        for activity_nbr, loaded_date in cur:
+        cur.execute("""SELECT activity_nbr, citation_id, loaded_date
+        FROM unicore.osha_violations_new
+        ORDER BY activity_nbr, citation_id""")
+        for activity_nbr, citation_id, loaded_date in cur:
+            key = f'{activity_nbr}:{citation_id}'
+            if DEBUGGING and retrieved < 5:
+                logging.info(f'key from db is {key}')
             retrieved += 1
-            retval[f'{activity_nbr}'] = loaded_date
+            retval[key] = loaded_date
             if DEBUGGING and retrieved > 500:
                 break
 
@@ -63,11 +61,11 @@ def extract_new_inspections(csv_directory, pathname_new, pathname_updated):
         return retval
 
     logging.basicConfig(level=logging.INFO)
-    current_inspections = build_inspection_dictionary()
-    logging.info('current inspections collected')
+    current_violations = build_violation_dictionary()
+    logging.info('current violations collected')
     new_writer, upd_writer = None, None
     csv_pathnames = glob.glob(os.path.join(csv_directory,
-                                           'osha_inspection*.csv'))
+                                           'osha_violation*.csv'))
     new, updated, inspected = 0, 0, 0
     with open(pathname_new, 'w') as ofh_new:
         with open(pathname_updated, 'w') as ofh_upd:
@@ -75,22 +73,20 @@ def extract_new_inspections(csv_directory, pathname_new, pathname_updated):
                 with open(pathname, 'r') as ifh:
                     reader = csv.DictReader(ifh)
                     if new_writer is None:
-                        new_writer = make_writer(ofh_new,
-                                                 reader.fieldnames)
+                        new_writer = make_writer(ofh_new, reader.fieldnames)
                     if upd_writer is None:
-                        upd_writer = make_writer(ofh_upd,
-                                                 fieldnames=reader.fieldnames)
+                        upd_writer = make_writer(ofh_upd, reader.fieldnames)
                     for row in reader:
-                        key = row['activity_nr']
+                        key = f"{row['activity_nr']}:{row['citation_id']}"
                         if DEBUGGING and inspected < 5:
                             logging.info(f'key in file is {key}')
-                        if key not in current_inspections:
+                        if key not in current_violations:
                             new_writer.writerow(row)
                             new += 1
                         else:
                             load_date = datetime.strptime(
-                                    row['ld_dt'], OSHA_DATE_FORMAT)
-                            if load_date > current_inspections[key]:
+                                    row['load_dt'], OSHA_DATE_FORMAT)
+                            if load_date > current_violations[key]:
                                 upd_writer.writerow(row)
                                 updated += 1
                         inspected += 1
@@ -104,14 +100,14 @@ def extract_new_inspections(csv_directory, pathname_new, pathname_updated):
 
 
 parser = argparse.ArgumentParser(
-    """Extract from the CSVs such inspections as we do not have,
+    """Extract from the CSVs such violations as we do not have,
 or which we do not have in their newest form.""")
 parser.add_argument('csv_directory',
-                    help='directory where the osha_inspection*.csv files are')
+                    help='directory where the osha_violation*.csv files are')
 parser.add_argument('pathname_new',
                     help='pathname of the CSV for new records')
 parser.add_argument('pathname_updated',
                     help='pathname of the CSV for updated records')
 args = parser.parse_args()
-extract_new_inspections(args.csv_directory,
-                        args.pathname_new, args.pathname_updated)
+collate_violations(args.csv_directory,
+                   args.pathname_new, args.pathname_updated)
